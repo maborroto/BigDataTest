@@ -9,7 +9,7 @@ package bigdatatest;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
-import java.util.StringTokenizer;
+import java.util.TreeMap;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
@@ -20,13 +20,13 @@ import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.io.WritableComparator;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
-import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.Reducer.Context;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.GenericOptionsParser;
+import org.apache.hadoop.util.StringUtils;
 
 /**
  *
@@ -37,7 +37,7 @@ public class BigDataTest {
     /**
      * @param args the command line arguments
      */
-    static class MapCount extends Mapper<LongWritable, Text, KeyValue, DoubleWritable> {
+    static class MapReadSort extends Mapper<LongWritable, Text, KeyValue, DoubleWritable> {
 
         private static DoubleWritable time = new DoubleWritable(1);
 
@@ -55,7 +55,7 @@ public class BigDataTest {
         }
     }
 
-    static class ReducerCount extends Reducer<KeyValue, DoubleWritable, Text, Text> {
+    static class ReducerRow extends Reducer<KeyValue, DoubleWritable, Text, Text> {
 
         @Override
         protected void reduce(KeyValue key, Iterable<DoubleWritable> values, Context context) throws IOException, InterruptedException {
@@ -64,7 +64,6 @@ public class BigDataTest {
             for (DoubleWritable value : values) {
                 row += (" " + value.get());
             }
-
             context.write(key.key, new Text(row));
         }
     }
@@ -78,8 +77,8 @@ public class BigDataTest {
         Job job = Job.getInstance(conf, "Cactus Plot");
         String[] myArgs = new GenericOptionsParser(conf, args).getRemainingArgs();
 
-        job.setMapperClass(MapCount.class);
-        job.setReducerClass(ReducerCount.class);
+        job.setMapperClass(MapReadSort.class);
+        job.setReducerClass(ReducerRow.class);
 
         job.setOutputKeyClass(KeyValue.class);
         job.setOutputValueClass(DoubleWritable.class);
@@ -89,11 +88,59 @@ public class BigDataTest {
         job.setGroupingComparatorClass(KeyComparator.class);
 
         FileInputFormat.setInputPaths(job, new Path(myArgs[0]));
-        FileOutputFormat.setOutputPath(job, new Path(myArgs[1]));
+        FileOutputFormat.setOutputPath(job, new Path(myArgs[1] + "/first"));
 
         job.waitForCompletion(true);
-        System.exit(0);
 
+        /////////////////////////////////////////////
+        Configuration conf2 = new Configuration();
+        Job job2 = Job.getInstance(conf2, "Cactus Plot 2");
+
+        job2.setMapperClass(MapInverse.class);
+        job2.setReducerClass(ReducerInverse.class);
+
+        job2.setOutputKeyClass(LongWritable.class);
+        job2.setOutputValueClass(Text.class);
+        job2.setInputFormatClass(TextInputFormat.class);
+
+        FileInputFormat.setInputPaths(job2, new Path(myArgs[1] + "/first/part*"));
+        FileOutputFormat.setOutputPath(job2, new Path(myArgs[1] + "/final"));
+        System.exit(job2.waitForCompletion(true) ? 0 : 1);
+
+        /////////////////////////////////////////////       
+    }
+
+    static class MapInverse extends Mapper<LongWritable, Text, LongWritable, Text> {
+
+        @Override
+        protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+
+            String[] sValues = value.toString().split(" ");
+            long rowN = 0;
+            for (String sValue : sValues) {
+                context.write(new LongWritable(rowN), new Text(key.get() + "~" + sValue));
+                rowN++;
+            }
+
+        }
+    }
+
+    static class ReducerInverse extends Reducer<LongWritable, Text, Text, Text> {
+
+        @Override
+        protected void reduce(LongWritable key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
+
+            TreeMap<Long, String> row = new TreeMap<Long, String>();
+
+            for (Text value : values) {
+                String rowValue = value.toString();
+                String[] rowParts = rowValue.split("~");
+
+                row.put(Long.valueOf(rowParts[0]), rowParts[1]);
+            }
+            String rowString = StringUtils.join("\t", row.values());
+            context.write(new Text(rowString), new Text());
+        }
     }
 
     static class KeyComparator extends WritableComparator {
@@ -166,13 +213,4 @@ public class BigDataTest {
             return key.hashCode();
         }
     }
-
-    class KeyValuePartitioner extends Partitioner<KeyValue, Text> {
-
-        @Override
-        public int getPartition(KeyValue keyvalue, Text text, int numberOfPartitions) {
-            return Math.abs(keyvalue.key.hashCode() % numberOfPartitions);
-        }
-    }
-
 }
